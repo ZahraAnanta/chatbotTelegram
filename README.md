@@ -64,3 +64,16 @@ If you discover a security vulnerability within Laravel, please send an e-mail t
 ## License
 
 The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+
+## File yang Butuh Diubah :
+- app\Console\Commands\RunTelegramBot.php
+- telegram_bot.py
+- app\Console\Kernel.php
+
+## Requirements :
+- composer require guzzlehttp/guzzle
+- composer require illuminate/database
+- execute the Python script = php artisan make:command RunTelegramBot
+- Run Laravel's scheduler = php artisan telegram:run
+
+
