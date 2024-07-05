@@ -2,12 +2,13 @@ import os
 import google.generativeai as genai
 import matplotlib.pyplot as plt
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, InputFile
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackContext,filters, ContextTypes
 import mysql.connector
 from mysql.connector import Connect, Error
 import pandas as pd
-import sys
+import io
+from dateutil.relativedelta import relativedelta
 
 # Load environment variables from .env file
 load_dotenv()
@@ -208,7 +209,7 @@ async def get_sites_by_region(region: str) -> str:
             if sites:
                 response_text = f"Sites in {region}:\n"
                 for site in sites:
-                    response_text += f"Site Code: {site['site_kode']}\nSite Name: {site['site_name']}\n\n"
+                    response_text += f"ID: {site['id']}\nKode Kantor: {site['site_kode']}\nNama Kantor: {site['site_name']}\n\n"
             else:
                 response_text = f"No sites found in {region}."
     except Error as e:
@@ -221,17 +222,17 @@ async def get_sites_by_region(region: str) -> str:
 
 # Function to handle the /lampung command
 async def lampung(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    response_text = await get_sites_by_region('LAMPUNG')
+    response_text = await get_sites_by_region('1-Lampung')
     await update.message.reply_text(response_text)
 
 # Function to handle the /palembang command
 async def palembang(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    response_text = await get_sites_by_region('PALEMBANG')
+    response_text = await get_sites_by_region('2-Palembang')
     await update.message.reply_text(response_text)
 
 # Function to handle the /bengkulu command
 async def bengkulu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    response_text = await get_sites_by_region('BENGKULU')
+    response_text = await get_sites_by_region('3-Bengkulu')
     await update.message.reply_text(response_text)
 
 # Function to handle the /help command
@@ -247,6 +248,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/palembang - List sites in Palembang\n"
         "/bengkulu - List sites in Bengkulu\n"
         "/check_unupdated_tickets - Check for unupdated tickets\n"
+        "/analyze_tickets - Ticket time Proccess\n"
         "Ask a general question to get a response from the generative model."
     )
     await update.message.reply_text(response_text)
@@ -449,12 +451,7 @@ def analyze_tickets_from_db(host, user, password, database, input_date):
         if 'connection' in locals() and connection.is_connected():
             connection.close()
 
-
-
-
-
-
-
+#Function for Time Proccess from creat to update
 def analyze_tickets_data(data, input_date):
     data['CRTDT'] = pd.to_datetime(data['CRTDT'], errors='coerce')
     data['UPDDT'] = pd.to_datetime(data['UPDDT'], errors='coerce')
@@ -464,13 +461,18 @@ def analyze_tickets_data(data, input_date):
 
     if not filtered_data.empty:
         company_processing_time = filtered_data.groupby('COMP_ID')['Processing_Time_Hours'].mean()
+        total_tickets = len(filtered_data)
         response_text = f"\nAverage Processing Time per Company on {input_date}:\n\n"
         for comp_id, avg_time in company_processing_time.items():
             response_text += f"Company: {comp_id}, Average Processing Time: {avg_time:.2f} hours\n"
+        
+        response_text += f"\nTotal Tickets on {input_date}: {total_tickets}\n"
+        
         for comp_id, group in filtered_data.groupby('COMP_ID'):
             response_text += f"\nCompany: {comp_id}\n"
             for index, row in group[['CRTDT', 'STORAGE', 'NOTICKET']].iterrows():
                 response_text += f"Date: {row['CRTDT']}, Storage: {row['STORAGE']}, Ticket Number: {row['NOTICKET']}\n"
+        
         plt.figure(figsize=(10, 6))
         for comp_id, group in filtered_data.groupby('COMP_ID'):
             plt.hist(group['Processing_Time_Hours'].dropna(), bins=20, alpha=0.6, label=comp_id, edgecolor='black')
@@ -527,6 +529,127 @@ async def analyze_tickets(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             db_conn.close()
 
 
+
+# Function to get ticket data from database
+def get_ticket_data():
+    connection = get_db_connection()
+    if connection:
+        query = "SELECT CRTDT FROM wbticket"
+        data = pd.read_sql(query, connection)
+        connection.close()
+        return data
+    else:
+        print("Failed to connect to the database.")
+        return pd.DataFrame()  # Return empty DataFrame if connection failed
+
+# Function to make diagram ticket data for a weekly
+def create_ticket_plot(data):
+    # Mengonversi kolom tanggal menjadi tipe datetime
+    data['CRTDT'] = pd.to_datetime(data['CRTDT'])
+
+    # Menambahkan kolom minggu berdasarkan tanggal
+    data['minggu'] = data['CRTDT'].dt.isocalendar().week
+
+    # Menghitung jumlah tiket per minggu
+    tickets_per_week = data.groupby('minggu').size()
+
+    # Membuat diagram jumlah tiket per minggu
+    plt.figure(figsize=(16, 8))
+    ax = tickets_per_week.plot(kind='bar')
+
+    # Menentukan rentang tanggal
+    start_date = data['CRTDT'].min()
+    end_date = data['CRTDT'].max()
+
+    # Menyusun label xticks
+    weeks = tickets_per_week.index.tolist()
+    # Menggunakan tanggal awal minggu untuk label
+    week_labels = [(start_date + relativedelta(weeks=week-1)).strftime("%Y-%m-%d") for week in weeks]
+    plt.xticks(range(len(weeks)), week_labels, rotation=90, fontsize=9, ha='right')
+
+    plt.title('Jumlah Pembuatan Tiket per Minggu')
+    plt.xlabel('Per Minggu (dihitung dari tanggal awal)') 
+    plt.ylabel('Jumlah Tiket')
+
+    # Menambahkan jumlah tiket di atas setiap batang
+    for i, v in enumerate(tickets_per_week):
+        ax.text(i, v + 0.5, str(v), ha='center', va='bottom')
+
+    plt.tight_layout()
+
+    # Menyimpan diagram ke dalam buffer
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    buf.seek(0)
+    
+    return buf, tickets_per_week.sum()
+
+# Function to make diagram ticket data for a monthly
+def create_ticket_plot_monthly(data):
+    # Menambahkan kolom bulan berdasarkan tanggal
+    data['bulan'] = data['CRTDT'].dt.to_period('M')
+
+    # Menghitung jumlah tiket per bulan
+    tickets_per_month = data.groupby('bulan').size()
+
+    # Membuat diagram jumlah tiket per bulan
+    plt.figure(figsize=(16, 8))
+    ax = tickets_per_month.plot(kind='bar')
+
+    # Menentukan rentang tanggal
+    start_date = data['CRTDT'].min()
+    end_date = data['CRTDT'].max()
+
+    # Menyusun label xticks
+    months = tickets_per_month.index.tolist()
+    month_labels = [f'{month.strftime("%B %Y")}' for month in months]
+    plt.xticks(range(len(months)), month_labels, rotation=90, fontsize=9, ha='center')
+
+    plt.title('Jumlah Pembuatan Tiket per Bulan')
+    plt.xlabel('Bulan')
+    plt.ylabel('Jumlah Tiket')
+
+    # Menambahkan jumlah tiket di atas setiap batang
+    for i, v in enumerate(tickets_per_month):
+        ax.text(i, v + 100, str(v), ha='center', va='bottom')
+
+    plt.tight_layout()
+
+    # Menyimpan diagram ke dalam buffer
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    buf.seek(0)
+    
+    return buf, tickets_per_month.sum()
+
+# Function to handle the /weekly_ticket_status command
+async def send_ticket_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Mengambil data dari database
+    data = get_ticket_data()
+    
+    if not data.empty:
+        # Membuat diagram
+        buf, total_tickets = create_ticket_plot(data)
+        
+        # Mengirim diagram ke pengguna
+        await update.message.reply_photo(photo=InputFile(buf), caption=f"Total Tiket: {total_tickets}")
+    else:
+        await update.message.reply_text("No data available or failed to connect to the database.")
+
+# Function to handle the /monthly_ticket_status command
+async def send_monthly_ticket_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Mengambil data dari database
+    data = get_ticket_data()
+    
+    if not data.empty:
+        # Membuat diagram
+        buf, total_tickets = create_ticket_plot_monthly(data)
+        
+        # Mengirim diagram ke pengguna
+        await update.message.reply_photo(photo=InputFile(buf), caption=f"Total Tiket: {total_tickets}")
+    else:
+        await update.message.reply_text("No data available or failed to connect to the database.")
+
 # Main function to set up the Telegram bot
 def main():
     # Set up the Application with your bot token
@@ -559,7 +682,14 @@ def main():
     # Register the /check_unupdated_tickets command handler
     application.add_handler(CommandHandler("check_unupdated_tickets", check_unupdated_tickets_command))
 
+    # Register the /analyze_tickets command handler
     application.add_handler(CommandHandler("analyze_tickets", analyze_tickets))
+
+    #Register the /weekly_ticket_status command handler
+    application.add_handler(CommandHandler("weekly_ticket_status", send_ticket_stats))
+
+    #Register the /monthly_ticket_status command handler
+    application.add_handler(CommandHandler("monthly_ticket_status", send_monthly_ticket_stats))
 
     # Register the message handler
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
