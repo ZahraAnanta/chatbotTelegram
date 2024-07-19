@@ -2,16 +2,24 @@ import os
 import google.generativeai as genai
 import matplotlib.pyplot as plt
 from dotenv import load_dotenv
+from datetime import datetime, timedelta
 from telegram import Update, InputFile
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackContext,filters, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler, CallbackContext, filters, ContextTypes, ConversationHandler
+)
 import mysql.connector
 from mysql.connector import Connect, Error
+from sqlalchemy import create_engine
 import pandas as pd
-import io
+import seaborn as sns
+import logging
 from dateutil.relativedelta import relativedelta
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Set up logging
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 API_KEY = os.getenv('GOOGLE_API_KEY')
 TELEGRAM_API_KEY = os.getenv('TELEGRAM_API_KEY')
@@ -22,10 +30,16 @@ MYSQL_DATABASE = os.getenv('MYSQL_DATABASE')
 
 # Configure the Gemini API
 genai.configure(api_key=API_KEY)
-
 model = genai.GenerativeModel(model_name='gemini-pro')
 chat = model.start_chat(history=[])
 instruction = "In this chat, respond as if you're explaining things to a five-year-old child"
+
+# Define a constant for the maximum message length
+MAX_MESSAGE_LENGTH = 4096
+
+# Define SQLAlchemy engines
+engine_a = create_engine('mysql+pymysql://root:jejeluv@localhost:3306/ptpn_database')
+engine_b = create_engine('mysql+pymysql://uapp:uapppass@192.168.200.52:3306/pks')
 
 # Establish MySQL database connection
 def get_db_connection():
@@ -37,618 +51,349 @@ def get_db_connection():
             database=MYSQL_DATABASE
         )
     except Error as e:
-        print(f"Error connecting to MySQL database: {e}")
+        logging.error(f"Error connecting to MySQL database: {e}")
         return None
-
-# Function to handle the /sites command
-async def sites(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    db_conn = get_db_connection()
-    if db_conn is None:
-        await update.message.reply_text("Failed to connect to the database.")
-        return
-
-    try:
-        with db_conn.cursor(dictionary=True) as cursor:
-            cursor.execute("SELECT * FROM sites")
-            sites = cursor.fetchall()
-
-            if sites:
-                response_text = "Sites:\n"
-                for site in sites:
-                    response_text += f"Site Code: {site['site_kode']}\nSite Name: {site['site_name']}\nSite Region: {site['site_wilayah']}\nActive Status: {site['site_aktif']}\n\n"
-            else:
-                response_text = "No sites found."
-    except Error as e:
-        response_text = f"Error fetching sites: {e}"
-    finally:
-        if db_conn.is_connected():
-            db_conn.close()
-
-    await update.message.reply_text(response_text)
 
 # Function to handle the /start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text('Hello! Ask me anything.')
 
-# Function to get a single site from the database by site_kode
-async def get_site_data(site_kode: str) -> str:
-    db_conn = get_db_connection()
-    if db_conn is None:
-        return "Failed to connect to the database."
-
-    try:
-        with db_conn.cursor(dictionary=True) as cursor:
-            cursor.execute("SELECT * FROM sites WHERE site_kode = %s", (site_kode,))
-            site = cursor.fetchone()
-
-            if site:
-                response_text = f"Site details for {site['site_kode']}:\nSite Name: {site['site_name']}\nSite Region: {site['site_wilayah']}\nActive Status: {site['site_aktif']}"
-            else:
-                response_text = f"No site named {site_kode} found."
-    except Error as e:
-        response_text = f"Error fetching site: {e}"
-    finally:
-        if db_conn.is_connected():
-            db_conn.close()
-
-    return response_text
-
-# Function to count offices by region
-async def count_offices(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    db_conn = get_db_connection()
-    if db_conn is None:
-        await update.message.reply_text("Failed to connect to the database.")
-        return
-
-    try:
-        with db_conn.cursor(dictionary=True) as cursor:
-            cursor.execute("""
-                SELECT site_wilayah, COUNT(*) AS jumlah_kantor
-                FROM sites
-                GROUP BY site_wilayah
-                LIMIT 100
-            """)
-            regions = cursor.fetchall()
-
-            if regions:
-                response_text = "Office Count by Region:\n"
-                for region in regions:
-                    response_text += f"Region: {region['site_wilayah']}, Offices: {region['jumlah_kantor']}\n"
-            else:
-                response_text = "No data found."
-    except Error as e:
-        response_text = f"Error fetching office count: {e}"
-    finally:
-        if db_conn.is_connected():
-            db_conn.close()
-
-    await update.message.reply_text(response_text)
-
-# Function to get the status of a site
-async def get_site_status(site_kode: str) -> str:
-    db_conn = get_db_connection()
-    if db_conn is None:
-        return "Failed to connect to the database."
-
-    try:
-        with db_conn.cursor(dictionary=True) as cursor:
-            cursor.execute("SELECT site_kode, site_aktif FROM sites WHERE site_kode = %s", (site_kode,))
-            status = cursor.fetchone()
-
-            if status:
-                response_text = (f"Kondisi Jaringan Unit {status['site_kode']} terkini:\n"
-                                 f"Active Status: {'UP' if status['site_aktif'] == 1 else 'DOWN'}")
-            else:
-                response_text = f"No status found for site {site_kode}."
-    except Error as e:
-        response_text = f"Error fetching status: {e}"
-    finally:
-        if db_conn.is_connected():
-            db_conn.close()
-
-    return response_text
-
-# Function to handle the /status command
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    parts = update.message.text.split()
-    if len(parts) == 2:
-        site_kode = parts[1]
-        response_text = await get_site_status(site_kode)
-    else:
-        response_text = "Please provide a valid site kode. Example: /status SUNI"
-
-    await update.message.reply_text(response_text)
-
 # Function to handle messages
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    question = update.message.text.strip()
-    response_text = ""
-
-    # Check for specific keywords in the user's message
-    if 'site' in question.lower():
-        # Extract site kode from the message (assuming the format "site <site_kode>")
-        parts = question.split()
-        if len(parts) == 2:
-            site_kode = parts[1]
-            response_text = await get_site_data(site_kode)
-        else:
-            response_text = "Please provide a valid site kode. Example: 'site KDIR'"
+    question = update.message.text
+    if question.strip() != '':
+        response = chat.send_message(question)
+        await update.message.reply_text(response.text)
     else:
-        # If no specific keywords, use the generative model
-        if question.strip() != '':
-            response = chat.send_message(question)
-            response_text = response.text
-            # Save the question and response to the database
-            db_conn = get_db_connection()
-            if db_conn is not None:
-                try:
-                    with db_conn.cursor() as cursor:
-                        cursor.execute("INSERT INTO chat_history (question, response) VALUES (%s, %s)", (question, response_text))
-                    db_conn.commit()
-                except mysql.connector.Error as e:
-                    print(f"Error inserting chat history: {e}")
-                finally:
-                    if db_conn.is_connected():
-                        db_conn.close()
-        else:
-            response_text = 'Please ask a question.'
-
-    await update.message.reply_text(response_text)
-
-# Function to get sites by region
-async def get_sites_by_region(region: str) -> str:
-    db_conn = get_db_connection()
-    if db_conn is None:
-        return "Failed to connect to the database."
-
-    try:
-        with db_conn.cursor(dictionary=True) as cursor:
-            cursor.execute("SELECT * FROM sites WHERE site_wilayah = %s", (region,))
-            sites = cursor.fetchall()
-
-            if sites:
-                response_text = f"Sites in {region}:\n"
-                for site in sites:
-                    response_text += f"ID: {site['id']}\nKode Kantor: {site['site_kode']}\nNama Kantor: {site['site_name']}\n\n"
-            else:
-                response_text = f"No sites found in {region}."
-    except Error as e:
-        response_text = f"Error fetching sites: {e}"
-    finally:
-        if db_conn.is_connected():
-            db_conn.close()
-
-    return response_text
-
-# Function to handle the /lampung command
-async def lampung(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    response_text = await get_sites_by_region('1-Lampung')
-    await update.message.reply_text(response_text)
-
-# Function to handle the /palembang command
-async def palembang(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    response_text = await get_sites_by_region('2-Palembang')
-    await update.message.reply_text(response_text)
-
-# Function to handle the /bengkulu command
-async def bengkulu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    response_text = await get_sites_by_region('3-Bengkulu')
-    await update.message.reply_text(response_text)
+        await update.message.reply_text('Please ask a question.')
 
 # Function to handle the /help command
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     response_text = (
         "Here are the commands you can use:\n\n"
-        "/start - Start the bot\n"
-        "/help - Show this help message\n"
-        "/sites - List all sites\n"
-        "/count_offices - Count offices by region\n"
-        "/status <site_kode> - Get the status of a site\n"
-        "/lampung - List sites in Lampung\n"
-        "/palembang - List sites in Palembang\n"
-        "/bengkulu - List sites in Bengkulu\n"
-        "/check_unupdated_tickets - Check for unupdated tickets\n"
-        "/analyze_tickets - Ticket time Proccess\n"
+        "/start - Memulai bot\n"
+        "/help - Menampilkan pesan ini\n\n"
+        "/tampilkan_berat_storage - Menampilkan berat bersih per-storage\n"
+        "Menampilkan Total Berat :\n"
+        "/tampilkan_total_berat_per_site -  Menampilkan berat berdasarkan site_id\n"
+        "/tampilkan_total_berat_per_site site:<SITE_ID> -  Menampilkan berat berdasarkan lokasi tertentu\n"
+        "/tampilkan_total_berat_per_site tanggal:<YYYY-MM-DD> - Menampilkan berat berdasarkan hari tertentu\n"
+        "/tampilkan_total_berat_per_site tanggal:<YYYY-MM> - Menampilkan berat berdasarkan bulan tertentu\n"
         "Ask a general question to get a response from the generative model."
     )
     await update.message.reply_text(response_text)
 
-# Function to check for unupdated tickets
-def check_unupdated_tickets():
+# Function to get average weight per supplier
+async def get_avg_weight_per_supplier(supplier_name: str) -> list:
+    db_conn = get_db_connection()
+    if db_conn is None:
+        return ["Failed to connect to the database."]
+
+    try:
+        with db_conn.cursor(dictionary=True) as cursor:
+            query = """
+                SELECT supplier_ffb.SUPPLIERNAME,
+                       supplier_ffb.KOMODITAS,
+                       AVG(wbticket.BERATBERSIH) as avg_berat_bersih
+                FROM wbticket
+                JOIN supplier_ffb ON wbticket.SUPPLIERCODE = supplier_ffb.SUPPLIERCODE
+                WHERE supplier_ffb.SUPPLIERNAME = %s
+                GROUP BY supplier_ffb.SUPPLIERNAME, supplier_ffb.KOMODITAS
+            """
+            cursor.execute(query, (supplier_name,))
+            rows = cursor.fetchall()
+
+            if rows:
+                response_texts = []
+                current_text = "Rata-rata Berat per Supplier:\n\n"
+                for row in rows:
+                    entry = (f"Supplier: {row['SUPPLIERNAME']}\n"
+                             f"Komoditas: {row['KOMODITAS']}\n"
+                             f"Rata-rata Berat Bersih\t: {row['avg_berat_bersih']} t\n\n")
+                    if len(current_text) + len(entry) > 4096:
+                        response_texts.append(current_text)
+                        current_text = entry
+                    else:
+                        current_text += entry
+                response_texts.append(current_text)
+            else:
+                response_texts = ["Tidak ada data yang ditemukan untuk supplier tersebut."]
+    except Error as e:
+        response_texts = [f"Error fetching average weight per supplier: {e}"]
+    finally:
+        if db_conn.is_connected():
+            db_conn.close()
+
+    return response_texts
+
+async def tampilkan_avg_berat_per_supplier(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if context.args:
+        supplier_name = ' '.join(context.args)
+        response_texts = await get_avg_weight_per_supplier(supplier_name)
+    else:
+        response_texts = ["Silakan berikan nama supplier setelah perintah. Contoh: /tampilkan_avg_berat_per_supplier NamaSupplier"]
+
+    for response_text in response_texts:
+        await update.message.reply_text(response_text)
+
+
+#Function to get weight per storage
+async def get_total_weight_per_storage(storage=None, tanggal=None) -> str:
     db_conn = get_db_connection()
     if db_conn is None:
         return "Failed to connect to the database."
 
     try:
-        query = """
-        SELECT NOTICKET, COMP_ID, CRTBY, CRTDT, UPDDT
-        FROM wbticket
-        """
-        data = pd.read_sql(query, db_conn)
-
-        # Convert date columns to datetime
-        data['CRTDT'] = pd.to_datetime(data['CRTDT'], errors='coerce')
-        data['UPDDT'] = pd.to_datetime(data['UPDDT'], errors='coerce')
-
-        # Identify tickets that have not been updated
-        unupdated_tickets = data[data['UPDDT'].isna()]
-
-        # Display ticket number, comp_id, and crtby for unupdated tickets
-        if not unupdated_tickets.empty:
-            result = unupdated_tickets[['NOTICKET', 'COMP_ID', 'CRTBY']]
-            return result.to_json(orient="records")
-        else:
-            return "Semua tiket sudah diupdate."
-    except Error as e:
-        return f"Error fetching data: {e}"
-    finally:
-        if db_conn.is_connected():
-            db_conn.close()
-
-# Function to handle the /analyze_tickets command with date input
-async def analyze_tickets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("Please enter a date (YYYY-MM-DD) for ticket analysis:")
-
-# Function to handle message input for ticket analysis
-async def handle_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    input_date = update.message.text.strip()
-
-    # Load data from the database
-    db_conn = get_db_connection()
-    if db_conn is None:
-        await update.message.reply_text("Failed to connect to the database.")
-        return
-
-    try:
         with db_conn.cursor(dictionary=True) as cursor:
-            # Fetch ticket data from the database
-            cursor.execute("""
-                SELECT CRTDT, UPDDT, COMP_ID, STORAGE, NOTICKET
-                FROM wbticket 
-                WHERE POSTINGDT IS NOT NULL AND UPDDT IS NOT NULL
-            """)
-            rows = cursor.fetchall()
-
-            if rows:
-                # Create a DataFrame from the rows
-                data = pd.DataFrame(rows)
-
-                # Convert CRTDT and UPDDT columns to datetime
-                data['CRTDT'] = pd.to_datetime(data['CRTDT'], errors='coerce')
-                data['UPDDT'] = pd.to_datetime(data['UPDDT'], errors='coerce')
-
-                # Drop rows with invalid dates
-                data = data.dropna(subset=['CRTDT', 'UPDDT'])
-
-                # Filter data based on input date
-                filtered_data = data[data['CRTDT'].dt.date == pd.to_datetime(input_date).date()]
-
-                if not filtered_data.empty:
-                    # Calculate processing time in hours
-                    filtered_data['Processing_Time_Hours'] = (filtered_data['UPDDT'] - filtered_data['CRTDT']).dt.total_seconds() / 3600
-
-                    # Calculate average processing time per company
-                    company_processing_time = filtered_data.groupby('COMP_ID')['Processing_Time_Hours'].mean()
-
-                    # Print average processing time per company
-                    response_text = f"\nAverage Processing Time per Company on {input_date}:\n\n"
-                    for comp_id, avg_time in company_processing_time.items():
-                        response_text += f"Company: {comp_id}, Average Processing Time: {avg_time:.2f} hours\n"
-
-                    # Send response
-                    await update.message.reply_text(response_text)
-
-                    # Show details for each company
-                    for comp_id, group in filtered_data.groupby('COMP_ID'):
-                        response_text = f"\nCompany: {comp_id}\n"
-                        for index, row in group[['CRTDT', 'STORAGE', 'NOTICKET']].iterrows():
-                            response_text += f"Date: {row['CRTDT']}, Storage: {row['STORAGE']}, Ticket Number: {row['NOTICKET']}\n"
-                        await update.message.reply_text(response_text)
-
-                    # Plot distribution of processing time per company
-                    plt.figure(figsize=(10, 6))
-                    for comp_id, group in filtered_data.groupby('COMP_ID'):
-                        plt.hist(group['Processing_Time_Hours'].dropna(), bins=20, alpha=0.6, label=comp_id, edgecolor='black')
-
-                    plt.title(f'Distribution of Processing Time per Company on {input_date}')
-                    plt.xlabel('Processing Time (hours)')
-                    plt.ylabel('Frequency')
-                    plt.legend()
-                    plt.grid(True)
-                    plt.tight_layout()
-
-                    # Save plot to file
-                    plot_filename = 'ticket_processing_time.png'
-                    plt.savefig(plot_filename)
-
-                    # Send plot as photo
-                    await context.bot.send_photo(chat_id=update.message.chat_id, photo=open(plot_filename, 'rb'))
-
-                    # Clear plot for next use
-                    plt.clf()
-                else:
-                    await update.message.reply_text(f"No ticket data found for {input_date}.")
+            if tanggal:
+                target_date = datetime.strptime(tanggal, '%Y-%m-%d')
             else:
-                await update.message.reply_text("No ticket data found in the database.")
-    except Error as e:
-        await update.message.reply_text(f"Error analyzing tickets: {e}")
-    finally:
-        if db_conn.is_connected():
-            db_conn.close()
+                target_date = datetime.now()
 
+            this_month = target_date.strftime('%Y-%m')
+            this_year = target_date.year
 
-# Function to handle the /check_unupdated_tickets command
-async def check_unupdated_tickets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    result = check_unupdated_tickets()
-    await update.message.reply_text(result)
-
-# Function to analyze tickets from the database based on input date
-def analyze_tickets_from_db(host, user, password, database, input_date):
-    try:
-        # Establish MySQL connection
-        connection = mysql.connector.connect(
-            host=host,
-            user=user,
-            password=password,
-            database=database
-        )
-
-        if connection.is_connected():
-            # Query to fetch ticket data for the input date
-            query = f"""
-            SELECT NOTICKET, COMP_ID, CRTBY, CRTDT, UPDDT, STORAGE
-            FROM wbticket
-            WHERE DATE(CRTDT) = '{input_date}'
+            query = """
+                SELECT STORAGE,
+                       SUM(CASE WHEN DATE(TGLMASUK) = %(target_date)s THEN BERATBERSIH ELSE 0 END) as total_berat_bersih_hari_ini,
+                       SUM(CASE WHEN DATE_FORMAT(TGLMASUK, '%Y-%m') = %(this_month)s THEN BERATBERSIH ELSE 0 END) as total_berat_bersih_bulan_ini,
+                       SUM(CASE WHEN YEAR(TGLMASUK) = %(this_year)s THEN BERATBERSIH ELSE 0 END) as total_berat_bersih_tahun_ini
+                FROM wbticket
+                WHERE 1=1
             """
-            data = pd.read_sql(query, connection)
+            params = {'target_date': target_date.date(), 'this_month': this_month, 'this_year': this_year}
+            if storage:
+                query += " AND STORAGE = %(storage)s"
+                params['storage'] = storage
 
-            # Convert date columns to datetime
-            data['CRTDT'] = pd.to_datetime(data['CRTDT'], errors='coerce')
-            data['UPDDT'] = pd.to_datetime(data['UPDDT'], errors='coerce')
+            query += " GROUP BY STORAGE"
 
-            # Drop rows with invalid dates
-            data = data.dropna(subset=['CRTDT', 'UPDDT'])
-
-            # Calculate processing time in hours
-            data['Processing_Time_Hours'] = (data['UPDDT'] - data['CRTDT']).dt.total_seconds() / 3600
-
-            # Group by company and calculate mean processing time
-            company_processing_time = data.groupby('COMP_ID')['Processing_Time_Hours'].mean()
-
-            # Plot distribution of processing time per company
-            plt.figure(figsize=(10, 6))
-            for COMP_ID, group in data.groupby('COMP_ID'):
-                plt.hist(group['Processing_Time_Hours'].dropna(), bins=20, alpha=0.6, label=COMP_ID, edgecolor='black')
-
-            plt.title(f'Distribution of Processing Time per Company on {input_date}')
-            plt.xlabel('Processing Time (hours)')
-            plt.ylabel('Frequency')
-            plt.legend()
-            plt.grid(True)
-            histogram_filename = f'ticket_processing_time_{input_date}.png'
-            plt.savefig(histogram_filename)  # Save histogram as an image file
-            plt.close()
-
-            # Summary statistics of processing time
-            processing_time_summary = company_processing_time.describe()
-
-            # Conclusion based on average processing time
-            average_processing_time = processing_time_summary['mean']
-            threshold_hours = 24  # Threshold for reasonable processing time
-
-            if average_processing_time < threshold_hours:
-                conclusion = f"The system is effective because the average processing time is {average_processing_time:.2f} hours, which is faster than the threshold ({threshold_hours} hours)."
-            else:
-                conclusion = f"The system is less effective because the average processing time is {average_processing_time:.2f} hours, which is slower than the threshold ({threshold_hours} hours)."
-
-            return processing_time_summary, conclusion, histogram_filename
-
-    except mysql.connector.Error as e:
-        print(f"Error while connecting to MySQL: {e}")
-        return None, None, None
-
-    finally:
-        if 'connection' in locals() and connection.is_connected():
-            connection.close()
-
-#Function for Time Proccess from creat to update
-def analyze_tickets_data(data, input_date):
-    data['CRTDT'] = pd.to_datetime(data['CRTDT'], errors='coerce')
-    data['UPDDT'] = pd.to_datetime(data['UPDDT'], errors='coerce')
-    data = data.dropna(subset=['CRTDT', 'UPDDT'])
-    data['Processing_Time_Hours'] = (data['UPDDT'] - data['CRTDT']).dt.total_seconds() / 3600
-    filtered_data = data[data['CRTDT'].dt.date == pd.to_datetime(input_date).date()]
-
-    if not filtered_data.empty:
-        company_processing_time = filtered_data.groupby('COMP_ID')['Processing_Time_Hours'].mean()
-        total_tickets = len(filtered_data)
-        response_text = f"\nAverage Processing Time per Company on {input_date}:\n\n"
-        for comp_id, avg_time in company_processing_time.items():
-            response_text += f"Company: {comp_id}, Average Processing Time: {avg_time:.2f} hours\n"
-        
-        response_text += f"\nTotal Tickets on {input_date}: {total_tickets}\n"
-        
-        for comp_id, group in filtered_data.groupby('COMP_ID'):
-            response_text += f"\nCompany: {comp_id}\n"
-            for index, row in group[['CRTDT', 'STORAGE', 'NOTICKET']].iterrows():
-                response_text += f"Date: {row['CRTDT']}, Storage: {row['STORAGE']}, Ticket Number: {row['NOTICKET']}\n"
-        
-        plt.figure(figsize=(10, 6))
-        for comp_id, group in filtered_data.groupby('COMP_ID'):
-            plt.hist(group['Processing_Time_Hours'].dropna(), bins=20, alpha=0.6, label=comp_id, edgecolor='black')
-        plt.title(f'Distribution of Processing Time per Company on {input_date}')
-        plt.xlabel('Processing Time (hours)')
-        plt.ylabel('Frequency')
-        plt.legend()
-        plt.grid(True)
-        plt.tight_layout()
-        plot_filename = 'ticket_processing_time.png'
-        plt.savefig(plot_filename)
-        plt.clf()
-        return response_text, plot_filename
-    else:
-        return f"No ticket data found for {input_date}.", None
-
-async def analyze_tickets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    args = context.args
-    if len(args) != 1:
-        await update.message.reply_text("Please provide a date in the format YYYY-MM-DD.")
-        return
-    input_date = args[0]
-    try:
-        pd.to_datetime(input_date).date()
-    except ValueError:
-        await update.message.reply_text("Invalid date format. Please use YYYY-MM-DD.")
-        return
-    db_conn = get_db_connection()
-    if db_conn is None:
-        await update.message.reply_text("Failed to connect to the database.")
-        return
-    try:
-        with db_conn.cursor(dictionary=True) as cursor:
-            cursor.execute("""
-                SELECT CRTDT, UPDDT, COMP_ID, STORAGE, NOTICKET
-                FROM wbticket 
-                WHERE POSTINGDT IS NOT NULL AND UPDDT IS NOT NULL
-            """)
+            cursor.execute(query, params)
             rows = cursor.fetchall()
+
             if rows:
-                data = pd.DataFrame(rows)
-                response_text, plot_filename = analyze_tickets_data(data, input_date)
-                max_message_length = 4096
-                for i in range(0, len(response_text), max_message_length):
-                    await update.message.reply_text(response_text[i:i + max_message_length])
-                if plot_filename:
-                    await context.bot.send_photo(chat_id=update.message.chat_id, photo=open(plot_filename, 'rb'))
+                response_text = ""
+                for row in rows:
+                    response_text += (f"Nama Gudang: {row['STORAGE']}\n"
+                                      f"Total Berat Bersih Hari Ini\t: {row['total_berat_bersih_hari_ini']} t\n"
+                                      f"Total Berat Bersih Bulan Ini\t: {row['total_berat_bersih_bulan_ini']} t\n"
+                                      f"Total Berat Bersih Tahun Ini\t: {row['total_berat_bersih_tahun_ini']} t\n\n")
             else:
-                await update.message.reply_text("No ticket data found in the database.")
+                response_text = "Tidak ada data yang ditemukan untuk kriteria yang diberikan."
+
     except Error as e:
-        await update.message.reply_text(f"Error analyzing tickets: {e}")
+        response_text = f"Error fetching total weight per storage: {e}"
     finally:
         if db_conn.is_connected():
             db_conn.close()
 
+    return response_text
+
+# Fungsi untuk menampilkan total berat per storage
+async def tampilkan_total_berat_per_storage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = update.message.text.split()[1:]  # Memisahkan argumen dari teks pesan
+    storage = None
+    tanggal = None
+    
+    for arg in args:
+        if arg.startswith('storage:'):
+            storage = arg.split(':')[1]
+        elif arg.startswith('tanggal:'):
+            tanggal = arg.split(':')[1]
+
+    response_text = await get_total_weight_per_storage(storage=storage, tanggal=tanggal)
+    await update.message.reply_text(response_text)
+
+def split_message(text: str, max_length: int) -> list:
+    """Split the message into chunks of a specified maximum length."""
+    return [text[i:i+max_length] for i in range(0, len(text), max_length)]
 
 
-# Function to get ticket data from database
-def get_ticket_data():
+#adam
+def fetch_data_from_db(query):
+    """
+    Fetch data from the database and return it as a DataFrame.
+    """
     connection = get_db_connection()
     if connection:
-        query = "SELECT CRTDT FROM wbticket"
-        data = pd.read_sql(query, connection)
-        connection.close()
-        return data
-    else:
-        print("Failed to connect to the database.")
-        return pd.DataFrame()  # Return empty DataFrame if connection failed
+        try:
+            df = pd.read_sql(query, connection)
+            return df
+        except Error as e:
+            print(f"Error reading data from MySQL table: {e}")
+        finally:
+            if connection.is_connected():
+                connection.close()
+    return pd.DataFrame()
 
-# Function to make diagram ticket data for a weekly
-def create_ticket_plot(data):
-    # Mengonversi kolom tanggal menjadi tipe datetime
-    data['CRTDT'] = pd.to_datetime(data['CRTDT'])
+def get_data(site_id, tanggal, df):
+    """
+    Get data for a specific site and date from the DataFrame.
+    """
+    today = datetime.strptime(tanggal, '%Y-%m-%d')
+    yesterday = today - timedelta(days=1)
+    first_day_of_month = today.replace(day=1)
+    first_day_of_year = today.replace(month=1, day=1)
 
-    # Menambahkan kolom minggu berdasarkan tanggal
-    data['minggu'] = data['CRTDT'].dt.isocalendar().week
+    df_today = df[df['POSTINGDT'] == today.strftime('%Y-%m-%d')]
+    df_month = df[df['POSTINGDT'] >= first_day_of_month.strftime('%Y-%m-%d')]
+    df_year = df[df['POSTINGDT'] >= first_day_of_year.strftime('%Y-%m-%d')]
 
-    # Menghitung jumlah tiket per minggu
-    tickets_per_week = data.groupby('minggu').size()
+    today_weight = df_today.groupby('SUPPLIERCODE')['BERATBERSIH'].sum()
+    month_weight = df_month.groupby('SUPPLIERCODE')['BERATBERSIH'].sum()
+    year_weight = df_year.groupby('SUPPLIERCODE')['BERATBERSIH'].sum()
 
-    # Membuat diagram jumlah tiket per minggu
-    plt.figure(figsize=(16, 8))
-    ax = tickets_per_week.plot(kind='bar')
+    total_today_weight = df_today['BERATBERSIH'].sum()
+    total_month_weight = df_month['BERATBERSIH'].sum()
+    total_year_weight = df_year['BERATBERSIH'].sum()
 
-    # Menentukan rentang tanggal
-    start_date = data['CRTDT'].min()
-    end_date = data['CRTDT'].max()
+    return today_weight, month_weight, year_weight, total_today_weight, total_month_weight, total_year_weight
 
-    # Menyusun label xticks
-    weeks = tickets_per_week.index.tolist()
-    # Menggunakan tanggal awal minggu untuk label
-    week_labels = [(start_date + relativedelta(weeks=week-1)).strftime("%Y-%m-%d") for week in weeks]
-    plt.xticks(range(len(weeks)), week_labels, rotation=90, fontsize=9, ha='right')
+def display_info(site_id, tanggal, df):
+    """
+    Display information for a specific site and date.
+    """
+    today_weight, month_weight, year_weight, total_today_weight, total_month_weight, total_year_weight = get_data(site_id, tanggal, df)
 
-    plt.title('Jumlah Pembuatan Tiket per Minggu')
-    plt.xlabel('Per Minggu (dihitung dari tanggal awal)') 
-    plt.ylabel('Jumlah Tiket')
+    info = f"Info Pabrik (SITE_ID: {site_id})\n\n"
+    for supplier in today_weight.index:
+        info += (f"Asal Kebun : {supplier}\n"
+                 f"Berat Diterima Hari ini (POSTINGDT): {today_weight[supplier]} kg\n"
+                 f"Berat Diterima pada [Month to date(yesterday)] (POSTINGDT): {month_weight[supplier]} kg\n"
+                 f"Diterima [Year to date(yesterday)] (POSTINGDT): {year_weight[supplier]} kg\n\n")
 
-    # Menambahkan jumlah tiket di atas setiap batang
-    for i, v in enumerate(tickets_per_week):
-        ax.text(i, v + 0.5, str(v), ha='center', va='bottom')
+    info += (f"TOTAL Berat Bersih:\n"
+             f"Berat Diterima Hari ini (POSTINGDT): {total_today_weight} kg\n"
+             f"Berat Diterima pada [Month to date(yesterday)] (POSTINGDT): {total_month_weight} kg\n"
+             f"Diterima [Year to date(yesterday)] (POSTINGDT): {total_year_weight} kg")
 
-    plt.tight_layout()
+    return info
 
-    # Menyimpan diagram ke dalam buffer
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png')
-    buf.seek(0)
+# Function to handle the /info command
+async def info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Example query to fetch data, modify as needed
+    query = "SELECT * FROM wbticket"
+    df = fetch_data_from_db(query)
+
+    site_id = context.args[0] if context.args else 'default_site_id'
+    tanggal = context.args[1] if context.args else datetime.now().strftime('%Y-%m-%d')
+
+    info_message = display_info(site_id, tanggal, df)
+    await update.message.reply_text(info_message)
+
+
+# Function to get weight per site for today, month-to-date, and year-to-date
+async def get_data_site_tanggal(site_id, tanggal) -> str:
+    db_conn = get_db_connection()
+    if db_conn is None:
+        return "Failed to connect to the database."
+
+    try:
+        # Query to get data from Database A
+        query_a = "SELECT SITE_ID, site_name FROM wbticket WHERE SITE_ID = %s"
+        df_a = pd.read_sql(query_a, engine_a, params=(site_id,))
+
+        # Check if site_name was found
+        if df_a.empty:
+            return "No site found with the provided SITE_ID."
+
+        site_name = df_a.iloc[0]['site_name']
+
+        with db_conn.cursor(dictionary=True) as cursor:
+            # Query for today's data
+            query_today = """
+                SELECT JENISMUATAN, SITE_ID, SUPPLIERCODEGROUP, SUM(BERATBERSIH - GRD_RCUTKGFIX) AS NETTO
+                FROM wbticket
+                WHERE POSTINGDT = %s AND SITE_ID = %s AND JENISMUATAN = '31000010'
+                GROUP BY JENISMUATAN, SITE_ID, SUPPLIERCODEGROUP
+            """
+            cursor.execute(query_today, (tanggal + ' 00:00:00', site_id))
+            data_today = cursor.fetchall()
+
+            # Query for month-to-date data
+            start_of_month = tanggal[:8] + '01'
+            query_month = """
+                SELECT JENISMUATAN, SITE_ID, SUPPLIERCODEGROUP, SUM(BERATBERSIH - GRD_RCUTKGFIX) AS NETTO
+                FROM wbticket
+                WHERE POSTINGDT BETWEEN %s AND %s AND SITE_ID = %s AND JENISMUATAN = '31000010'
+                GROUP BY JENISMUATAN, SITE_ID, SUPPLIERCODEGROUP
+            """
+            cursor.execute(query_month, (start_of_month + ' 00:00:00', tanggal + ' 23:59:59', site_id))
+            data_month = cursor.fetchall()
+
+            # Query for year-to-date data
+            start_of_year = tanggal[:5] + '01-01'
+            query_year = """
+                SELECT JENISMUATAN, SITE_ID, SUPPLIERCODEGROUP, SUM(BERATBERSIH - GRD_RCUTKGFIX) AS NETTO
+                FROM wbticket
+                WHERE POSTINGDT BETWEEN %s AND %s AND SITE_ID = %s AND JENISMUATAN = '31000010'
+                GROUP BY JENISMUATAN, SITE_ID, SUPPLIERCODEGROUP
+            """
+            cursor.execute(query_year, (start_of_year + ' 00:00:00', tanggal + ' 23:59:59', site_id))
+            data_year = cursor.fetchall()
+
+        response_text = f"Data for {site_name} on {tanggal}:\n\n"
+        index = 1
+
+        # Process today's data
+        if data_today:
+            response_text += "Data hari ini:\n"
+            for row in data_today:
+                response_text += (f" - Kode Muatan\t\t\t: {row['JENISMUATAN']}, \n"
+                                  f"   Kode Supplier\t: {row['SUPPLIERCODEGROUP']}, \n"
+                                  f"   NETTO\t\t\t\t: {row['NETTO']}\n\n")
+                index += 1
+        else:
+            response_text += "No data found for today.\n"
+
+        # Process month-to-date data
+        if data_month:
+            response_text += "\nData pada Bulan:\n"
+            for row in data_month:
+                response_text += (f" - Kode Muatan\t\t\t: {row['JENISMUATAN']}, \n"
+                                  f"   Kode Supplier\t: {row['SUPPLIERCODEGROUP']}, \n"
+                                  f"   NETTO\t\t\t\t: {row['NETTO']}\n\n")
+                index += 1
+        else:
+            response_text += "No data found for this month.\n"
+
+        # Process year-to-date data
+        if data_year:
+            response_text += "\nData per Tahun:\n"
+            for row in data_year:
+                response_text += (f" - Kode Muatan\t\t\t: {row['JENISMUATAN']}, \n"
+                                  f"   Kode Supplier\t: {row['SUPPLIERCODEGROUP']}, \n "
+                                  f"   NETTO\t\t\t\t: {row['NETTO']}\n\n")
+                index += 1
+        else:
+            response_text += "No data found for this year.\n"
+
+    except Exception as e:
+        response_text = f"Error fetching data: {e}"
+    finally:
+        if db_conn.is_connected():
+            db_conn.close()
+
+    return response_text
+
+# Command handler to display data for a specific site and date
+async def tampilkan_data_site_tanggal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if len(context.args) != 2:
+        await update.message.reply_text("Please provide the SITE_ID and date in the format YYYY-MM-DD.")
+        return
+
+    site_id = context.args[0]
+    tanggal = context.args[1]
+
+    # Fetch the data
+    response_text = await get_data_site_tanggal(site_id, tanggal)
+
+    # Split the message if it is too long
+    messages = split_message(response_text, MAX_MESSAGE_LENGTH)
     
-    return buf, tickets_per_week.sum()
-
-# Function to make diagram ticket data for a monthly
-def create_ticket_plot_monthly(data):
-    # Menambahkan kolom bulan berdasarkan tanggal
-    data['bulan'] = data['CRTDT'].dt.to_period('M')
-
-    # Menghitung jumlah tiket per bulan
-    tickets_per_month = data.groupby('bulan').size()
-
-    # Membuat diagram jumlah tiket per bulan
-    plt.figure(figsize=(16, 8))
-    ax = tickets_per_month.plot(kind='bar')
-
-    # Menentukan rentang tanggal
-    start_date = data['CRTDT'].min()
-    end_date = data['CRTDT'].max()
-
-    # Menyusun label xticks
-    months = tickets_per_month.index.tolist()
-    month_labels = [f'{month.strftime("%B %Y")}' for month in months]
-    plt.xticks(range(len(months)), month_labels, rotation=90, fontsize=9, ha='center')
-
-    plt.title('Jumlah Pembuatan Tiket per Bulan')
-    plt.xlabel('Bulan')
-    plt.ylabel('Jumlah Tiket')
-
-    # Menambahkan jumlah tiket di atas setiap batang
-    for i, v in enumerate(tickets_per_month):
-        ax.text(i, v + 100, str(v), ha='center', va='bottom')
-
-    plt.tight_layout()
-
-    # Menyimpan diagram ke dalam buffer
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png')
-    buf.seek(0)
-    
-    return buf, tickets_per_month.sum()
-
-# Function to handle the /weekly_ticket_status command
-async def send_ticket_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Mengambil data dari database
-    data = get_ticket_data()
-    
-    if not data.empty:
-        # Membuat diagram
-        buf, total_tickets = create_ticket_plot(data)
-        
-        # Mengirim diagram ke pengguna
-        await update.message.reply_photo(photo=InputFile(buf), caption=f"Total Tiket: {total_tickets}")
-    else:
-        await update.message.reply_text("No data available or failed to connect to the database.")
-
-# Function to handle the /monthly_ticket_status command
-async def send_monthly_ticket_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Mengambil data dari database
-    data = get_ticket_data()
-    
-    if not data.empty:
-        # Membuat diagram
-        buf, total_tickets = create_ticket_plot_monthly(data)
-        
-        # Mengirim diagram ke pengguna
-        await update.message.reply_photo(photo=InputFile(buf), caption=f"Total Tiket: {total_tickets}")
-    else:
-        await update.message.reply_text("No data available or failed to connect to the database.")
+    # Send each part of the message separately
+    for msg in messages:
+        await update.message.reply_text(msg)
 
 # Main function to set up the Telegram bot
 def main():
@@ -660,39 +405,25 @@ def main():
 
     # Register the /help command handler
     application.add_handler(CommandHandler("help", help_command))
+    
+    # Register the /tampilkan_avg_berat_per_supplier command handler
+    application.add_handler(CommandHandler("tampilkan_avg_berat_per_supplier", tampilkan_avg_berat_per_supplier))
 
-    # Register the /sites command handler
-    application.add_handler(CommandHandler("sites", sites))
+    # Register the /info command handler
+    application.add_handler(CommandHandler("info", info))
 
-    # Register the /count_offices command handler
-    application.add_handler(CommandHandler("count_offices", count_offices))
-
-    # Register the /status command handler
-    application.add_handler(CommandHandler("status", status))
-
-    # Register the /lampung command handler
-    application.add_handler(CommandHandler("lampung", lampung))
-
-    # Register the /palembang command handler
-    application.add_handler(CommandHandler("palembang", palembang))
-
-    # Register the /bengkulu command handler
-    application.add_handler(CommandHandler("bengkulu", bengkulu))
-
-    # Register the /check_unupdated_tickets command handler
-    application.add_handler(CommandHandler("check_unupdated_tickets", check_unupdated_tickets_command))
-
-    # Register the /analyze_tickets command handler
-    application.add_handler(CommandHandler("analyze_tickets", analyze_tickets))
-
-    #Register the /weekly_ticket_status command handler
-    application.add_handler(CommandHandler("weekly_ticket_status", send_ticket_stats))
-
-    #Register the /monthly_ticket_status command handler
-    application.add_handler(CommandHandler("monthly_ticket_status", send_monthly_ticket_stats))
+    # Register the /tampilkan_data_site_tanggal command handler
+    application.add_handler(CommandHandler("tampilkan_data_site_tanggal", tampilkan_data_site_tanggal))
 
     # Register the message handler
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    # Command handler untuk /tampilkan_berat_storage
+    tampilkan_berat_storage_handler = CommandHandler(
+        'tampilkan_berat_storage', 
+        tampilkan_total_berat_per_storage
+    )
+    application.add_handler(tampilkan_berat_storage_handler)
 
     # Start the Bot
     application.run_polling()
