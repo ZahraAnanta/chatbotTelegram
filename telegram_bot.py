@@ -289,15 +289,18 @@ async def get_data_site_tanggal(site_id, tanggal) -> str:
         return "Failed to connect to the database."
 
     try:
-        # Query to get data from Database A
-        query_a = "SELECT SITE_ID, site_name FROM wbticket WHERE SITE_ID = %s"
-        df_a = pd.read_sql(query_a, engine_a, params=(site_id,))
+        # Query to get data from Database A (ptpn_database)
+        query_a = "SELECT SITE_ID, site_name, SUPPLIERCODEGROUP, SUPPLIERNAME FROM ticket WHERE SITE_ID = %s"
+        df_a = pd.read_sql(query_a, engine_a, params=(site_id, ))
 
         # Check if site_name was found
         if df_a.empty:
             return "No site found with the provided SITE_ID."
 
         site_name = df_a.iloc[0]['site_name']
+        
+        # Create a dictionary to map SUPPLIERCODEGROUP to SUPPLIERNAME
+        supplier_map = df_a.set_index('SUPPLIERCODEGROUP')['SUPPLIERNAME'].to_dict()
 
         with db_conn.cursor(dictionary=True) as cursor:
             # Query for today's data
@@ -339,9 +342,11 @@ async def get_data_site_tanggal(site_id, tanggal) -> str:
         if data_today:
             response_text += "Data hari ini:\n"
             for row in data_today:
+                supplier_name = supplier_map.get(row['SUPPLIERCODEGROUP'], 'Unknown Supplier')
                 response_text += (f" - Kode Muatan\t\t\t: {row['JENISMUATAN']}, \n"
                                   f"   Kode Supplier\t: {row['SUPPLIERCODEGROUP']}, \n"
-                                  f"   NETTO\t\t\t\t: {row['NETTO']}\n\n")
+                                  f"   Nama Supplier\t: {supplier_name}, \n"
+                                  f"   NETTO\t\t\t\t: {row['NETTO']} kg \n\n")
                 index += 1
         else:
             response_text += "No data found for today.\n"
@@ -350,9 +355,11 @@ async def get_data_site_tanggal(site_id, tanggal) -> str:
         if data_month:
             response_text += "\nData pada Bulan:\n"
             for row in data_month:
+                supplier_name = supplier_map.get(row['SUPPLIERCODEGROUP'], 'Unknown Supplier')
                 response_text += (f" - Kode Muatan\t\t\t: {row['JENISMUATAN']}, \n"
                                   f"   Kode Supplier\t: {row['SUPPLIERCODEGROUP']}, \n"
-                                  f"   NETTO\t\t\t\t: {row['NETTO']}\n\n")
+                                  f"   Nama Supplier\t: {supplier_name}, \n"
+                                  f"   NETTO\t\t\t\t: {row['NETTO']} kg \n\n")
                 index += 1
         else:
             response_text += "No data found for this month.\n"
@@ -361,9 +368,11 @@ async def get_data_site_tanggal(site_id, tanggal) -> str:
         if data_year:
             response_text += "\nData per Tahun:\n"
             for row in data_year:
+                supplier_name = supplier_map.get(row['SUPPLIERCODEGROUP'], 'Unknown Supplier')
                 response_text += (f" - Kode Muatan\t\t\t: {row['JENISMUATAN']}, \n"
                                   f"   Kode Supplier\t: {row['SUPPLIERCODEGROUP']}, \n "
-                                  f"   NETTO\t\t\t\t: {row['NETTO']}\n\n")
+                                  f"   Nama Supplier\t: {supplier_name}, \n"
+                                  f"   NETTO\t\t\t\t: {row['NETTO']} kg \n\n")
                 index += 1
         else:
             response_text += "No data found for this year.\n"
