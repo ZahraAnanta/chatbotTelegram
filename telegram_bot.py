@@ -76,6 +76,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/help - Menampilkan pesan ini\n\n"
         "/tampilkan_avg_berat_per_supplier - Menampilkan berat berdasarkan supplier \n\n"
         "/info - Menampilkan info keseluruhan site \n\n"
+        "/yearly_net_weight - Menampilkan diagram keseluruhan site per-year \n\n"
+        "/monthly_net_weight - Menampilkan diagram keseluruhan site per-month \n\n"
+        "/daily_net_weight - - Menampilkan diagram keseluruhan site per-year \n\n"
         "/detail - Menampilkan berat bersih pada site tertentu untuk kurun waktu Day to date, Month to date, Year to date \n\n"
     )
     await update.message.reply_text(response_text)
@@ -279,6 +282,7 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(info_message)
 
 
+# Function to get weight per site for today, month-to-date, and year-to-date
 async def get_data_site_tanggal(site_id, tanggal) -> str:
     db_conn = get_db_connection()
     if db_conn is None:
@@ -299,91 +303,218 @@ async def get_data_site_tanggal(site_id, tanggal) -> str:
         supplier_map = df_a.set_index('SUPPLIERCODEGROUP')['SUPPLIERNAME'].to_dict()
 
         with db_conn.cursor(dictionary=True) as cursor:
-            # Query for today's data
+            # Query for today's data (NETTO KEBUN DAY TO DATE)
             query_today = """
+                SELECT 
+                    'KEBUN' AS JENISMUATAN,
+                    SITE_ID,
+                    SUM(BERATBERSIH - GRD_RCUTKGFIX) AS TOTAL_NETTO,
+                    (SUM(BERATBERSIH - GRD_RCUTKGFIX) - (
+                        SELECT 
+                            SUM(BERATBERSIH - GRD_RCUTKGFIX) 
+                        FROM 
+                            wbticket 
+                        WHERE 
+                            SUPPLIERCODEGROUP = '25001059' 
+                            AND POSTINGDT = %s
+                            AND SITE_ID = %s 
+                            AND JENISMUATAN = '31000010'
+                    )) AS NETTO_KEBUN
+                FROM 
+                    wbticket
+                WHERE 
+                    POSTINGDT = %s
+                    AND SITE_ID = %s
+                    AND JENISMUATAN = '31000010'
+                GROUP BY 
+                    SITE_ID
+            """
+            cursor.execute(query_today, (tanggal + ' 00:00:00', site_id, tanggal + ' 00:00:00', site_id))
+            data_today = cursor.fetchall()
+
+            # Query for month-to-date data (NETTO KEBUN MONTH TO DATE)
+            start_of_month = tanggal[:8] + '01'
+            query_month = """
+                SELECT 
+                    'KEBUN' AS JENISMUATAN,
+                    SITE_ID,
+                    SUM(BERATBERSIH - GRD_RCUTKGFIX) AS TOTAL_NETTO,
+                    (SUM(BERATBERSIH - GRD_RCUTKGFIX) - (
+                        SELECT 
+                            SUM(BERATBERSIH - GRD_RCUTKGFIX) 
+                        FROM 
+                            wbticket 
+                        WHERE 
+                            SUPPLIERCODEGROUP = '25001059' 
+                            AND POSTINGDT BETWEEN %s AND %s
+                            AND SITE_ID = %s 
+                            AND JENISMUATAN = '31000010'
+                    )) AS NETTO_KEBUN
+                FROM 
+                    wbticket
+                WHERE 
+                    POSTINGDT BETWEEN %s AND %s
+                    AND SITE_ID = %s
+                    AND JENISMUATAN = '31000010'
+                GROUP BY 
+                    SITE_ID
+            """
+            cursor.execute(query_month, (start_of_month + ' 00:00:00', tanggal + ' 23:59:59', site_id, start_of_month + ' 00:00:00', tanggal + ' 23:59:59', site_id))
+            data_month = cursor.fetchall()
+
+            # Query for year-to-date data (NETTO KEBUN YEAR TO DATE)
+            start_of_year = tanggal[:5] + '01-01'
+            query_year = """
+                SELECT 
+                    'KEBUN' AS JENISMUATAN,
+                    SITE_ID,
+                    SUM(BERATBERSIH - GRD_RCUTKGFIX) AS TOTAL_NETTO,
+                    (SUM(BERATBERSIH - GRD_RCUTKGFIX) - (
+                        SELECT 
+                            SUM(BERATBERSIH - GRD_RCUTKGFIX) 
+                        FROM 
+                            wbticket 
+                        WHERE 
+                            SUPPLIERCODEGROUP = '25001059' 
+                            AND POSTINGDT BETWEEN %s AND %s
+                            AND SITE_ID = %s 
+                            AND JENISMUATAN = '31000010'
+                    )) AS NETTO_KEBUN
+                FROM 
+                    wbticket
+                WHERE 
+                    POSTINGDT BETWEEN %s AND %s
+                    AND SITE_ID = %s
+                    AND JENISMUATAN = '31000010'
+                GROUP BY 
+                    SITE_ID
+            """
+            cursor.execute(query_year, (start_of_year + ' 00:00:00', tanggal + ' 23:59:59', site_id, start_of_year + ' 00:00:00', tanggal + ' 23:59:59', site_id))
+            data_year = cursor.fetchall()
+
+            # Queries for supplier details (day, month, and year)
+            query_supplier_day = """
                 SELECT JENISMUATAN, SITE_ID, SUPPLIERCODEGROUP, SUM(BERATBERSIH - GRD_RCUTKGFIX) AS NETTO
                 FROM wbticket
                 WHERE POSTINGDT = %s AND SITE_ID = %s AND JENISMUATAN = '31000010'
                 GROUP BY JENISMUATAN, SITE_ID, SUPPLIERCODEGROUP
             """
-            cursor.execute(query_today, (tanggal + ' 00:00:00', site_id))
-            data_today = cursor.fetchall()
-
-            # Query for month-to-date data
-            start_of_month = tanggal[:8] + '01'
-            query_month = """
+            query_supplier_month = """
                 SELECT JENISMUATAN, SITE_ID, SUPPLIERCODEGROUP, SUM(BERATBERSIH - GRD_RCUTKGFIX) AS NETTO
                 FROM wbticket
                 WHERE POSTINGDT BETWEEN %s AND %s AND SITE_ID = %s AND JENISMUATAN = '31000010'
                 GROUP BY JENISMUATAN, SITE_ID, SUPPLIERCODEGROUP
             """
-            cursor.execute(query_month, (start_of_month + ' 00:00:00', tanggal + ' 23:59:59', site_id))
-            data_month = cursor.fetchall()
-
-            # Query for year-to-date data
-            start_of_year = tanggal[:5] + '01-01'
-            query_year = """
+            query_supplier_year = """
                 SELECT JENISMUATAN, SITE_ID, SUPPLIERCODEGROUP, SUM(BERATBERSIH - GRD_RCUTKGFIX) AS NETTO
                 FROM wbticket
                 WHERE POSTINGDT BETWEEN %s AND %s AND SITE_ID = %s AND JENISMUATAN = '31000010'
                 GROUP BY JENISMUATAN, SITE_ID, SUPPLIERCODEGROUP
             """
-            cursor.execute(query_year, (start_of_year + ' 00:00:00', tanggal + ' 23:59:59', site_id))
-            data_year = cursor.fetchall()
+
+            cursor.execute(query_supplier_day, (tanggal + ' 00:00:00', site_id))
+            supplier_data_today = cursor.fetchall()
+
+            cursor.execute(query_supplier_month, (start_of_month + ' 00:00:00', tanggal + ' 23:59:59', site_id))
+            supplier_data_month = cursor.fetchall()
+
+            cursor.execute(query_supplier_year, (start_of_year + ' 00:00:00', tanggal + ' 23:59:59', site_id))
+            supplier_data_year = cursor.fetchall()
 
         response_text = f"Data for {site_name} on {tanggal}:\n\n"
         index = 1
 
-        # Initialize total NETTO values
         total_netto_today = 0
         total_netto_month = 0
         total_netto_year = 0
 
         # Process today's data
         if data_today:
-            response_text += "Data hari ini:\n"
-            for row in data_today:
-                supplier_name = supplier_map.get(row['SUPPLIERCODEGROUP'], 'Unknown Supplier')
-                netto = row['NETTO']
-                total_netto_today += netto
-                response_text += (f" - Kode Muatan\t\t\t: {row['JENISMUATAN']}, \n"
-                                  f"   Kode Supplier\t: {row['SUPPLIERCODEGROUP']}, \n"
-                                  f"   Nama Supplier\t: {supplier_name}, \n"
-                                  f"   NETTO\t\t\t\t: {netto:,.0f} kg \n\n")
-                index += 1
-            response_text += f"**Total NETTO hari ini: {total_netto_today:,.0f} kg**\n"
+            response_text += "DATA HARI INI :\n"
+            for row in supplier_data_today:
+                if row['SUPPLIERCODEGROUP'] != '25001059':
+                    supplier_name = supplier_map.get(row['SUPPLIERCODEGROUP'], 'Unknown Supplier')
+                    netto_formatted = f"{row['NETTO']:,}".replace(',', '.')
+                    response_text += (f" - Nama Supplier\t: {supplier_name} \n"
+                                      f"   Netto\t\t\t\t: {netto_formatted} kg \n\n")
+                    total_netto_today += row['NETTO']
+                    index += 1
+
+            if data_today:
+                for row in data_today:
+                    netto_formatted = f"{row['NETTO_KEBUN']:,}".replace(',', '.')
+                    response_text += f"NETTO KEBUN SENDIRI HARI INI: {netto_formatted} kg\n"
+
+            response_text += "\n"
+            for row in supplier_data_today:
+                if row['SUPPLIERCODEGROUP'] == '25001059':
+                    supplier_name = supplier_map.get(row['SUPPLIERCODEGROUP'], 'Unknown Supplier')
+                    netto_formatted = f"{row['NETTO']:,}".replace(',', '.')
+                    response_text += (f" - Nama Supplier\t: {supplier_name} \n"
+                                      f"   Netto\t\t\t\t: {netto_formatted} kg \n\n")
+                    total_netto_today += row['NETTO']
+
+            response_text += f"TOTAL NETTO HARI INI : {total_netto_today:,}".replace(',', '.') + " kg\n"
         else:
             response_text += "No data found for today.\n"
 
         # Process month-to-date data
         if data_month:
-            response_text += "\nData pada Bulan:\n"
-            for row in data_month:
-                supplier_name = supplier_map.get(row['SUPPLIERCODEGROUP'], 'Unknown Supplier')
-                netto = row['NETTO']
-                total_netto_month += netto
-                response_text += (f" - Kode Muatan\t\t\t: {row['JENISMUATAN']}, \n"
-                                  f"   Kode Supplier\t: {row['SUPPLIERCODEGROUP']}, \n"
-                                  f"   Nama Supplier\t: {supplier_name}, \n"
-                                  f"   NETTO\t\t\t\t: {netto:,.0f} kg \n\n")
-                index += 1
-            response_text += f"**Total NETTO bulan ini: {total_netto_month:,.0f} kg**\n"
+            response_text += "\n\n DATA PADA BULAN INI :\n"
+            for row in supplier_data_month:
+                if row['SUPPLIERCODEGROUP'] != '25001059':
+                    supplier_name = supplier_map.get(row['SUPPLIERCODEGROUP'], 'Unknown Supplier')
+                    netto_formatted = f"{row['NETTO']:,}".replace(',', '.')
+                    response_text += (f" - Nama Supplier\t: {supplier_name} \n"
+                                      f"   Netto\t\t\t\t: {netto_formatted} kg \n\n")
+                    total_netto_month += row['NETTO']
+                    index += 1
+
+            if data_month:
+                for row in data_month:
+                    netto_formatted = f"{row['NETTO_KEBUN']:,}".replace(',', '.')
+                    response_text += f"NETTO KEBUN SENDIRI BULAN INI: {netto_formatted} kg\n"
+
+            response_text += "\n"
+            for row in supplier_data_month:
+                if row['SUPPLIERCODEGROUP'] == '25001059':
+                    supplier_name = supplier_map.get(row['SUPPLIERCODEGROUP'], 'Unknown Supplier')
+                    netto_formatted = f"{row['NETTO']:,}".replace(',', '.')
+                    response_text += (f" - Nama Supplier\t: {supplier_name} \n"
+                                      f"   Netto\t\t\t\t: {netto_formatted} kg \n\n")
+                    total_netto_month += row['NETTO']
+
+            response_text += f"TOTAL NETTO BULAN INI : {total_netto_month:,}".replace(',', '.') + " kg\n"
         else:
             response_text += "No data found for this month.\n"
 
         # Process year-to-date data
         if data_year:
-            response_text += "\nData per Tahun:\n"
-            for row in data_year:
-                supplier_name = supplier_map.get(row['SUPPLIERCODEGROUP'], 'Unknown Supplier')
-                netto = row['NETTO']
-                total_netto_year += netto
-                response_text += (f" - Kode Muatan\t\t\t: {row['JENISMUATAN']}, \n"
-                                  f"   Kode Supplier\t: {row['SUPPLIERCODEGROUP']}, \n "
-                                  f"   Nama Supplier\t: {supplier_name}, \n"
-                                  f"   NETTO\t\t\t\t: {netto:,.0f} kg \n\n")
-                index += 1
-            response_text += f"**Total NETTO tahun ini: {total_netto_year:,.0f} kg**\n"
+            response_text += "\n\n DATA PADA TAHUN INI :\n"
+            for row in supplier_data_year:
+                if row['SUPPLIERCODEGROUP'] != '25001059':
+                    supplier_name = supplier_map.get(row['SUPPLIERCODEGROUP'], 'Unknown Supplier')
+                    netto_formatted = f"{row['NETTO']:,}".replace(',', '.')
+                    response_text += (f" - Nama Supplier\t: {supplier_name} \n"
+                                      f"   Netto\t\t\t\t: {netto_formatted} kg \n\n")
+                    total_netto_year += row['NETTO']
+                    index += 1
+
+            if data_year:
+                for row in data_year:
+                    netto_formatted = f"{row['NETTO_KEBUN']:,}".replace(',', '.')
+                    response_text += f"NETTO KEBUN SENDIRI TAHUN INI: {netto_formatted} kg\n"
+
+            response_text += "\n"
+            for row in supplier_data_year:
+                if row['SUPPLIERCODEGROUP'] == '25001059':
+                    supplier_name = supplier_map.get(row['SUPPLIERCODEGROUP'], 'Unknown Supplier')
+                    netto_formatted = f"{row['NETTO']:,}".replace(',', '.')
+                    response_text += (f" - Nama Supplier\t: {supplier_name} \n"
+                                      f"   Netto\t\t\t\t: {netto_formatted} kg \n\n")
+                    total_netto_year += row['NETTO']
+
+            response_text += f"TOTAL NETTO TAHUN INI : {total_netto_year:,}".replace(',', '.') + " kg\n"
         else:
             response_text += "No data found for this year.\n"
 
@@ -391,36 +522,23 @@ async def get_data_site_tanggal(site_id, tanggal) -> str:
         response_text = f"Error fetching data: {e}"
     finally:
         if db_conn.is_connected():
-            db_conn.close()
+            db_conn.close()  
 
     return response_text
 
-
-
-
 # Command handler to display data for a specific site and date
-async def detail(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def tampilkan_data_site_tanggal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if len(context.args) != 2:
         await update.message.reply_text("untuk menggunakan fungsi ini ketikan dengan format sebagai berikut.\n"
                                         "/detail <site_id> <yyyy-mm-dd>\n\n"
                                         "contoh:\n"
                                         "/detail 7F01 2024-07-13\n\n"
-                                        "DAFTAR SITE_ID:\n"
-                                        "1. 3P02 = PB. WAY BERULU\n"
-                                        "2. 3P03 = PB. KEDATON\n"
-                                        "3. 3P04 = PB. PEMATANG KIWAH\n"
-                                        "4. 3P05 = PB. TULANG BUYUT\n"
-                                        "5. 3P06 = PB. BETUNG\n"
-                                        "6. 3P07 = PB. TALANG SANGIT\n"
-                                        "7. 3P08 = PB. SUNGAI LENGI\n"
-                                        "8. 3P10 = PB. MUSILANDAS\n"
-                                        "9. 3P11 = PB. TEBENAN\n"
-                                        "10. GP12 = PB. BATURAJA\n"
-                                        "11. GP14 = PB. PADANG PELAWI\n"
-                                        "12. GP15 = PB. KETAHUN\n"
-                                        "13. GP16 = PB. PAGAR ALAM\n"
-                                        "14. 7F01 = PB. BEKRI\n"
-                                        "15. 7F06 = PB. BETUNG\n")
+                                        "DAFTAR SITE_ID PALM CO:\n"
+                                        "1. 7F01 = PB. BEKRI\n"
+                                        "2. 7F06 = PB. BETUNG\n"
+                                        "3. 7F07 = PB. TALANG SAWIT\n"
+                                        "4. 7F08 = PB. SUNGAI LENGI\n"
+                                        "5. 7F14 = PB. TALOPINO\n")
         return
 
     site_id = context.args[0]
@@ -438,33 +556,32 @@ async def detail(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 
-
 # Fungsi untuk mendapatkan data berat bersih tahunan
-def get_yearly_net_weight(year):
+def get_yearly_net_weight(year, site_id):
     connection = get_db_connection()
     if connection:
-        query = f"""
+        start_date = f'{year}-01-01'
+        end_date = f'{year}-12-31'
+        
+        query = """
         SELECT MONTH(CRTDT) as BULAN, SUM(BERATBERSIH - GRD_RCUTKGFIX) AS NETTO_TAHUN
         FROM wbticket
-        WHERE SITE_ID = '7F01'
-        AND YEAR(POSTINGDT) = '{year}'
-        GROUP BY BULAN;
+        WHERE POSTINGDT BETWEEN %s AND %s AND SITE_ID = %s AND JENISMUATAN = '31000010'
+        GROUP BY MONTH(CRTDT);
         """
-        data = pd.read_sql(query, connection)
+        data = pd.read_sql(query, connection, params=(start_date, end_date, site_id))
         connection.close()
         return data
     else:
         print("Failed to connect to the database.")
         return pd.DataFrame()
 
+
 # Fungsi untuk membuat diagram batang berat bersih tahunan
 def plot_net_yearly_weight(data, title):
-    # Menambahkan semua bulan dari Januari hingga Desember
-    all_months = pd.DataFrame({'BULAN': range(1, 13)})
-    data = all_months.merge(data, on='BULAN', how='left').fillna(0)
-    
     if not data.empty:
-        fig, ax = plt.subplots(figsize=(12, 6))
+        total_netto = data['NETTO_TAHUN'].sum()  # Menghitung total netto
+        fig, ax = plt.subplots(figsize=(16, 8))
         data['BULAN'] = data['BULAN'].astype(int)
         data = data.sort_values('BULAN')
         ax.bar(data['BULAN'], data['NETTO_TAHUN'], color='skyblue')
@@ -478,134 +595,142 @@ def plot_net_yearly_weight(data, title):
         for p in ax.patches:
             height = p.get_height()
             if height > 0:
-                ax.annotate(f'{int(height)}', (p.get_x() + p.get_width() / 2., height),
+                ax.annotate(f'{int(height):,}'.replace(',', '.'), (p.get_x() + p.get_width() / 2., height),
                             ha='center', va='center', xytext=(0, 5), textcoords='offset points')
 
-        plt.tight_layout()
-
-        # Menyimpan diagram ke dalam buffer
         buf = BytesIO()
         plt.savefig(buf, format='png')
         buf.seek(0)
         plt.close(fig)
-        return buf
+        return buf, total_netto
     else:
-        return None
+        return None, 0
 
 # Fungsi untuk mengontrol /yearly_net_weight di chatbot
 async def send_yearly_net_weight(update: Update, context: CallbackContext) -> None:
-    # Mengambil argumen tahun dari perintah
     args = context.args
-    if len(args) == 1:
+    if len(args) == 2:
         try:
-            # Memparsing argumen tahun
             year = int(args[0])
-            # Mendapatkan data untuk tahun yang ditentukan
-            data = get_yearly_net_weight(year)
-            buf = plot_net_yearly_weight(data, f'Netto Tahunan per Bulan pada {year}')
+            site_id = args[1]  # SITE_ID dari argumen kedua
+            data = get_yearly_net_weight(year, site_id)
+            buf, total_netto = plot_net_yearly_weight(data, f'Netto Tahunan per Bulan pada {year}')
             if buf:
-                await update.message.reply_photo(photo=InputFile(buf))
+                await update.message.reply_photo(photo=InputFile(buf), caption=f"Total Netto: {total_netto:,} kg".replace(',', '.'))
             else:
                 await update.message.reply_text("Failed to retrieve yearly net weight data.")
         except ValueError:
             await update.message.reply_text("Invalid date format. Please use YYYY format.")
     else:
-        await update.message.reply_text("Please provide a year in the format YYYY. Example: /yearly_net_weight 2024")
+        await update.message.reply_text("Please provide a year and SITE_ID in the format YYYY SITE_ID. Example: /yearly_net_weight 2024 7F01")
 
 
 # Fungsi untuk mendapatkan data berat bersih bulanan
-def get_monthly_net_weight(year_month):
+def get_monthly_net_weight(year_month, site_id):
     connection = get_db_connection()
     if connection:
-        query = f"""
+        start_date = f'{year_month}-01'
+        end_date = (datetime.strptime(start_date, '%Y-%m-%d') + pd.DateOffset(months=1) - pd.DateOffset(days=1)).strftime('%Y-%m-%d')
+        
+        query = """
         SELECT DAY(CRTDT) as HARI, SUM(BERATBERSIH - GRD_RCUTKGFIX) AS NETTO_BULAN
         FROM wbticket
-        WHERE SITE_ID = '7F01'
-        AND DATE_FORMAT(POSTINGDT, '%Y-%m') = '{year_month}'
-        GROUP BY HARI;
+        WHERE POSTINGDT BETWEEN %s AND %s AND SITE_ID = %s AND JENISMUATAN = '31000010'
+        GROUP BY DAY(CRTDT);
         """
-        data = pd.read_sql(query, connection)
+        data = pd.read_sql(query, connection, params=(start_date, end_date, site_id))
         connection.close()
         return data
     else:
         print("Failed to connect to the database.")
         return pd.DataFrame()
 
+
 # Fungsi untuk membuat diagram batang berat bersih bulanan
 def plot_net_monthly_weight(data, title):
-    if not data.empty:
-        fig, ax = plt.subplots(figsize=(12, 6))
-        data['HARI'] = data['HARI'].astype(int)
-        data = data.sort_values('HARI')
-        ax.bar(data['HARI'], data['NETTO_BULAN'], color='skyblue')
-        ax.set_title(title)
-        ax.set_xlabel('Hari')
-        ax.set_ylabel('Netto (kg)')
-        ax.set_xticks(data['HARI'])
-        ax.set_xticklabels(data['HARI'], rotation=45, ha='right')
+    fig, ax = plt.subplots(figsize=(16, 8))
+    
+    # Tambahkan semua hari dari 1 hingga 31 untuk memastikan grafik tetap muncul meskipun tidak ada data
+    all_days = pd.DataFrame({'HARI': range(1, 32)})
+    data = all_days.merge(data, on='HARI', how='left').fillna(0)
+    
+    data['HARI'] = data['HARI'].astype(int)
+    data = data.sort_values('HARI')
+    ax.bar(data['HARI'], data['NETTO_BULAN'], color='skyblue')
+    ax.set_title(title)
+    ax.set_xlabel('Hari')
+    ax.set_ylabel('Netto (kg)')
+    ax.set_xticks(data['HARI'])
+    ax.set_xticklabels(data['HARI'], rotation=45, ha='right')
+    
+    # Menambahkan label data di atas batang
+    for p in ax.patches:
+        height = p.get_height()
+        if height > 0:
+            ax.annotate(f'{int(height):,}'.replace(',', '.'), (p.get_x() + p.get_width() / 2., height),
+                        ha='center', va='center', xytext=(0, 5), textcoords='offset points')
+    
+    # Hitung total netto
+    total_netto = data['NETTO_BULAN'].sum()
+    
+    # Tambahkan teks total netto di bawah grafik
+    plt.figtext(0.5, -0.1, f'Total Netto: {total_netto:,} kg'.replace(',', '.'), ha='center', fontsize=12)
+    
+    plt.tight_layout()
 
-        # Menambahkan label data di atas batang
-        for p in ax.patches:
-            height = p.get_height()
-            if height > 0:
-                ax.annotate(f'{int(height)}', (p.get_x() + p.get_width() / 2., height),
-                            ha='center', va='center', xytext=(0, 5), textcoords='offset points')
-
-        plt.tight_layout()
-
-        # Menyimpan diagram ke dalam buffer
-        buf = BytesIO()
-        plt.savefig(buf, format='png')
-        buf.seek(0)
-        plt.close(fig)
-        return buf
-    else:
-        return None  
+    # Menyimpan diagram ke dalam buffer
+    buf = BytesIO()
+    plt.savefig(buf, format='png')
+    buf.seek(0)
+    plt.close(fig)
+    
+    return buf, total_netto
 
 # Fungsi untuk mengontrol /monthly_net_weight di chatbot
 async def send_monthly_net_weight(update: Update, context: CallbackContext) -> None:
-    # Mengambil argumen bulan dari perintah
     args = context.args
-    if len(args) == 1:
+    if len(args) == 2:
         try:
-            # Memparsing argumen bulan
             year_month = datetime.strptime(args[0], '%Y-%m').strftime('%Y-%m')
-            # Mendapatkan data untuk bulan yang ditentukan
-            data = get_monthly_net_weight(year_month)
-            buf = plot_net_monthly_weight(data, f'Netto Bulanan per Hari pada {year_month}')
+            site_id = args[1]
+            data = get_monthly_net_weight(year_month, site_id)
+            buf, total_netto = plot_net_monthly_weight(data, f'Netto Bulanan per Hari pada {year_month}')
             if buf:
-                await update.message.reply_photo(photo=InputFile(buf))
+                await update.message.reply_photo(photo=InputFile(buf), caption=f"Total Netto: {total_netto:,} kg".replace(',', '.'))
             else:
                 await update.message.reply_text("Failed to retrieve monthly net weight data.")
         except ValueError:
             await update.message.reply_text("Invalid date format. Please use YYYY-MM format.")
     else:
-        await update.message.reply_text("Please provide a month in the format YYYY-MM. Example: /monthly_net_weight 2024-03")
+        await update.message.reply_text("Please provide a month and SITE_ID in the format YYYY-MM SITE_ID. Example: /monthly_net_weight 2024-03 7F01")
 
 
-    
 # Fungsi untuk mendapatkan data berat bersih harian
-def get_daily_net_weight(date):
+def get_daily_net_weight(date, site_id):
     connection = get_db_connection()
     if connection:
-        query = f"""
+        start_date = f'{date} 00:00:00'
+        end_date = f'{date} 23:59:59'
+        
+        query = """
         SELECT HOUR(CRTDT) as JAM, SUM(BERATBERSIH - GRD_RCUTKGFIX) AS NETTO_HARI
         FROM wbticket
-        WHERE SITE_ID = '7F01'
-        AND DATE(POSTINGDT) = '{date}'
-        GROUP BY JAM;
+        WHERE POSTINGDT BETWEEN %s AND %s AND SITE_ID = %s AND JENISMUATAN = '31000010'
+        GROUP BY HOUR(CRTDT);
         """
-        data = pd.read_sql(query, connection)
+        data = pd.read_sql(query, connection, params=(start_date, end_date, site_id))
         connection.close()
         return data
     else:
         print("Failed to connect to the database.")
         return pd.DataFrame()
 
+
 # Fungsi untuk membuat diagram batang berat bersih harian
 def plot_net_daily_weight(data, title):
     if not data.empty:
-        fig, ax = plt.subplots(figsize=(10, 6))
+        total_netto = data['NETTO_HARI'].sum()  # Menghitung total netto
+        fig, ax = plt.subplots(figsize=(16, 8))
         data['JAM'] = data['JAM'].astype(int)
         data = data.sort_values('JAM')
         ax.bar(data['JAM'], data['NETTO_HARI'], color='skyblue')
@@ -619,40 +744,35 @@ def plot_net_daily_weight(data, title):
         for p in ax.patches:
             height = p.get_height()
             if height > 0:
-                ax.annotate(f'{int(height)}', (p.get_x() + p.get_width() / 2., height),
+                ax.annotate(f'{int(height):,}'.replace(',', '.'), (p.get_x() + p.get_width() / 2., height),
                             ha='center', va='center', xytext=(0, 5), textcoords='offset points')
 
-        plt.tight_layout()
-
-        # Menyimpan diagram ke dalam buffer
         buf = BytesIO()
         plt.savefig(buf, format='png')
         buf.seek(0)
         plt.close(fig)
-        return buf
+        return buf, total_netto
     else:
-        return None
+        return None, 0
+
 
 # Fungsi untuk mengontrol /daily_net_weight di chatbot
 async def send_daily_net_weight(update: Update, context: CallbackContext) -> None:
-    # Mengambil argumen tanggal dari perintah
     args = context.args
-    if len(args) == 1:
+    if len(args) == 2:
         try:
-            # Memparsing argumen tanggal
-            date = datetime.strptime(args[0], '%Y-%m-%d').date()
-            # Mendapatkan data untuk tanggal yang ditentukan
-            data = get_daily_net_weight(date)
-            buf = plot_net_daily_weight(data, f'Netto Harian per Jam pada {date}')
+            date = args[0]
+            site_id = args[1]  # SITE_ID dari argumen kedua
+            data = get_daily_net_weight(date, site_id)
+            buf, total_netto = plot_net_daily_weight(data, f'Netto Harian per Jam pada {date}')
             if buf:
-                await update.message.reply_photo(photo=InputFile(buf))
+                await update.message.reply_photo(photo=InputFile(buf), caption=f"Total Netto: {total_netto:,} kg".replace(',', '.'))
             else:
                 await update.message.reply_text("Failed to retrieve daily net weight data.")
         except ValueError:
             await update.message.reply_text("Invalid date format. Please use YYYY-MM-DD format.")
     else:
-        await update.message.reply_text("Please provide a date in the format YYYY-MM-DD. Example: /daily_net_weight 2024-03-11")
-
+        await update.message.reply_text("Please provide a date and SITE_ID in the format YYYY-MM-DD SITE_ID. Example: /daily_net_weight 2024-07-25 7F01")
 
 
 # Main function to set up the Telegram bot
@@ -673,7 +793,7 @@ def main():
     application.add_handler(CommandHandler("info", info))
 
     # Register the /tampilkan_data_site_tanggal command handler
-    application.add_handler(CommandHandler("detail", detail))
+    application.add_handler(CommandHandler("detail", tampilkan_data_site_tanggal))
 
     application.add_handler(CommandHandler('yearly_net_weight', send_yearly_net_weight))
     application.add_handler(CommandHandler('monthly_net_weight', send_monthly_net_weight))
